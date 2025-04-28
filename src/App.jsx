@@ -1,244 +1,289 @@
-// src/App.jsx
 import { useState, useEffect } from 'react';
-import { Connect } from "@stacks/connect-react";
-import { StacksTestnet } from "@stacks/network";
-import { 
-  callReadOnlyFunction, 
-  contractPrincipalCV, 
-  uintCV, 
-  cvToValue 
-} from "@stacks/transactions";
-import { userSession } from './auth';
-import Navbar from './components/Navbar';
-import Dashboard from './components/Dashboard';
-import VaultForm from './components/VaultForm';
-import ConnectWallet from './components/ConnectWallet';
+import { connect, disconnect, isConnected, getLocalStorage, request } from '@stacks/connect';
+import { Cl } from '@stacks/transactions';
+import { StacksTestnet } from '@stacks/network';
 
-// Contract details
-const CONTRACT_ADDRESS = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM"; // Replace with your deployment address
-const CONTRACT_NAME = "stx-vault"; // Replace with your contract name
-
-function App() {
-  const [userData, setUserData] = useState(null);
+export default function App() {
+  const [walletAddress, setWalletAddress] = useState('');
+  const [amount, setAmount] = useState('');
+  const [lockBlocks, setLockBlocks] = useState('');
   const [vaultInfo, setVaultInfo] = useState(null);
-  const [canWithdraw, setCanWithdraw] = useState(false);
-  const [blocksUntilUnlock, setBlocksUntilUnlock] = useState(0);
+  const [blocksUntilUnlock, setBlocksUntilUnlock] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [currentBlockHeight, setCurrentBlockHeight] = useState(0);
-  const [txStatus, setTxStatus] = useState(null);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   const network = new StacksTestnet();
+  const CONTRACT_ADDRESS = 'ST2WD8TKH9C3VKX4C355RGPPWFGYRAA9WT29SFQZY.time-vault';
+  
 
   useEffect(() => {
-    if (userSession.isUserSignedIn()) {
-      const userData = userSession.loadUserData();
-      setUserData(userData);
-    }
+    const checkConnection = async () => {
+      try {
+        if (isConnected()) {
+          const data = getLocalStorage();
+          const stxAddress = data?.addresses?.stx?.[0]?.address || '';
+          console.log("address:", stxAddress);
+          if (stxAddress) {
+            setWalletAddress(stxAddress);
+            await fetchVaultInfo(stxAddress);
+          }
+        }
+      } catch (err) {
+        console.error('Connection check failed:', err);
+        setError('Failed to check wallet connection');
+      }
+    };
+    checkConnection();
   }, []);
 
-  useEffect(() => {
-    if (userData) {
-      fetchVaultInfo();
-      fetchBlockHeight();
-      // Poll for updates every 30 seconds
-      const interval = setInterval(() => {
-        fetchVaultInfo();
-        fetchBlockHeight();
-      }, 30000);
-      return () => clearInterval(interval);
-    }
-  }, [userData]);
-
-  const fetchBlockHeight = async () => {
+  const handleConnect = async () => {
     try {
-      const response = await fetch('https://stacks-node-api.testnet.stacks.co/v2/info');
-      const data = await response.json();
-      setCurrentBlockHeight(data.stacks_tip_height);
+      setLoading(true);
+      setError('');
+      await connect();
+      const data = getLocalStorage();
+      const stxAddress = data?.addresses?.stx?.[0]?.address || '';
+      setWalletAddress(stxAddress);
+      await fetchVaultInfo(stxAddress);
+      setSuccess('Wallet connected successfully');
+      setTimeout(() => setSuccess(''), 3000);
     } catch (error) {
-      console.error('Error fetching block height:', error);
-    }
-  };
-
-  const fetchVaultInfo = async () => {
-    if (!userData) return;
-    
-    setLoading(true);
-    try {
-      // Get vault info
-      const vaultInfoResponse = await callReadOnlyFunction({
-        contractAddress: CONTRACT_ADDRESS,
-        contractName: CONTRACT_NAME,
-        functionName: "get-vault-info",
-        functionArgs: [contractPrincipalCV(userData.profile.stxAddress.testnet, '')],
-        network,
-        senderAddress: userData.profile.stxAddress.testnet,
-      });
-      
-      const vaultData = cvToValue(vaultInfoResponse);
-      setVaultInfo(vaultData);
-      
-      // Check if can withdraw
-      const canWithdrawResponse = await callReadOnlyFunction({
-        contractAddress: CONTRACT_ADDRESS,
-        contractName: CONTRACT_NAME,
-        functionName: "can-withdraw",
-        functionArgs: [contractPrincipalCV(userData.profile.stxAddress.testnet, '')],
-        network,
-        senderAddress: userData.profile.stxAddress.testnet,
-      });
-      
-      setCanWithdraw(cvToValue(canWithdrawResponse));
-      
-      // Get blocks until unlock
-      const blocksResponse = await callReadOnlyFunction({
-        contractAddress: CONTRACT_ADDRESS,
-        contractName: CONTRACT_NAME,
-        functionName: "blocks-until-unlock",
-        functionArgs: [contractPrincipalCV(userData.profile.stxAddress.testnet, '')],
-        network,
-        senderAddress: userData.profile.stxAddress.testnet,
-      });
-      
-      setBlocksUntilUnlock(cvToValue(blocksResponse));
-    } catch (error) {
-      console.error('Error fetching vault info:', error);
+      console.error('Connection failed:', error);
+      setError('Wallet connection failed');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDeposit = async (amount, lockBlocks) => {
+  const handleDisconnect = () => {
     try {
-      setTxStatus({ type: 'loading', message: 'Initiating deposit transaction...' });
-      
-      const options = {
-        contractAddress: CONTRACT_ADDRESS,
-        contractName: CONTRACT_NAME,
-        functionName: 'deposit',
-        functionArgs: [uintCV(amount), uintCV(lockBlocks)],
-        network,
-        postConditionMode: 0x01, // allow
-        onFinish: (data) => {
-          setTxStatus({ 
-            type: 'success', 
-            message: 'Deposit transaction submitted! Transaction ID: ' + data.txId,
-            txId: data.txId
-          });
-          setTimeout(() => fetchVaultInfo(), 3000);
-        },
-      };
-      
-      await userSession.openContractCall(options);
-    } catch (error) {
-      console.error('Error depositing:', error);
-      setTxStatus({ type: 'error', message: 'Error depositing: ' + error.message });
+      disconnect();
+      setWalletAddress('');
+      setVaultInfo(null);
+      setBlocksUntilUnlock(null);
+      setSuccess('Wallet disconnected');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      console.error('Disconnect failed:', err);
+      setError('Failed to disconnect wallet');
     }
   };
 
-  const handleWithdraw = async () => {
+  const depositSTX = async () => {
+    if (!amount || !lockBlocks || Number(amount) <= 0 || Number(lockBlocks) <= 0) {
+      setError('Please enter valid amount and lock period');
+      return;
+    }
+
     try {
-      setTxStatus({ type: 'loading', message: 'Initiating withdrawal transaction...' });
-      
-      const options = {
-        contractAddress: CONTRACT_ADDRESS,
-        contractName: CONTRACT_NAME,
+      setLoading(true);
+      setError('');
+      const amountMicroSTX = Math.floor(Number(amount) * 1000000);
+      const blocks = Math.floor(Number(lockBlocks));
+
+      console.log("Depositing:", {
+        amountSTX: amount,
+        amountMicroSTX,
+        lockBlocks: blocks
+      });
+
+      console.log("amount:", amount * 1000000);
+      const response = await request('stx_callContract', {
+        contract: CONTRACT_ADDRESS,
+        functionName: 'deposit',
+        functionArgs: [
+          Cl.uint(amountMicroSTX), // convert STX to micro-STX
+          Cl.uint(blocks)
+        ],
+        
+        network,
+      });
+      console.log("amount:", amount * 1000000);
+      console.log('Deposit success:', response);
+      setSuccess('Deposit transaction submitted');
+      setTimeout(() => setSuccess(''), 3000);
+      // Wait a few seconds then refresh vault info
+      setTimeout(() => fetchVaultInfo(walletAddress), 5000);
+    } catch (error) {
+      console.error('Deposit failed:', error);
+      setError('Deposit failed: ' + (error.message || 'Unknown error'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const withdrawSTX = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const response = await request('stx_callContract', {
+        contract: CONTRACT_ADDRESS,
         functionName: 'withdraw',
         functionArgs: [],
         network,
-        postConditionMode: 0x01, // allow
-        onFinish: (data) => {
-          setTxStatus({ 
-            type: 'success', 
-            message: 'Withdrawal transaction submitted! Transaction ID: ' + data.txId,
-            txId: data.txId
-          });
-          setTimeout(() => fetchVaultInfo(), 3000);
-        },
-      };
-      
-      await userSession.openContractCall(options);
+      });
+      console.log('Withdraw success:', response);
+      setSuccess('Withdrawal transaction submitted');
+      setTimeout(() => setSuccess(''), 3000);
+      // Wait a few seconds then refresh vault info
+      setTimeout(() => fetchVaultInfo(walletAddress), 5000);
     } catch (error) {
-      console.error('Error withdrawing:', error);
-      setTxStatus({ type: 'error', message: 'Error withdrawing: ' + error.message });
+      console.error('Withdraw failed:', error);
+      setError('Withdrawal failed: ' + (error.message || 'Unknown error'));
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleAuthResponse = (data) => {
-    if (data.authResponse) {
-      setUserData(userSession.loadUserData());
+  const fetchVaultInfo = async (address) => {
+    try {
+      setLoading(true);
+      setError('');
+      
+      // Get vault info
+      const infoResponse = await request('stx_callContract', {
+        contract: CONTRACT_ADDRESS,
+        functionName: 'get-vault-info',
+        functionArgs: [Cl.principal(address)],
+        network,
+      });
+      
+      // Get blocks until unlock
+      const blocksResponse = await request('stx_callContract', {
+        contract: CONTRACT_ADDRESS,
+        functionName: 'blocks-until-unlock',
+        functionArgs: [Cl.principal(address)],
+        network,
+      });
+
+      // Check if vault exists (response will be null if no vault)
+      if (infoResponse.result === null) {
+        setVaultInfo(null);
+        setBlocksUntilUnlock(null);
+      } else {
+        setVaultInfo(infoResponse.result);
+        setBlocksUntilUnlock(blocksResponse.result);
+      }
+    } catch (error) {
+      console.error('Fetch Vault Info failed:', error);
+      setError('Failed to fetch vault info');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const disconnect = () => {
-    userSession.signUserOut();
-    setUserData(null);
-    setVaultInfo(null);
-    setCanWithdraw(false);
-    setBlocksUntilUnlock(0);
+  const formatSTX = (microstx) => {
+    return (microstx / 1000000).toFixed(6);
   };
 
   return (
-    <Connect authOptions={{
-      appDetails: {
-        name: 'STX Time-Locked Vault',
-        icon: '/stx-logo.png',
-      },
-      onFinish: handleAuthResponse,
-      userSession,
-    }}>
-      <div className="min-h-screen bg-gray-100">
-        <Navbar 
-          userData={userData} 
-          disconnect={disconnect} 
-        />
-        
-        <main className="container mx-auto px-4 py-8">
-          {!userData ? (
-            <ConnectWallet />
-          ) : (
-            <>
-              <Dashboard 
-                vaultInfo={vaultInfo} 
-                canWithdraw={canWithdraw}
-                blocksUntilUnlock={blocksUntilUnlock}
-                currentBlockHeight={currentBlockHeight}
-                handleWithdraw={handleWithdraw}
-                loading={loading}
+    <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4">
+      <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-6 space-y-6">
+        <h1 className="text-2xl font-bold text-center text-indigo-600">STX Time Vault</h1>
+
+        {/* Status messages */}
+        {error && (
+          <div className="p-3 bg-red-100 text-red-700 rounded">
+            {error}
+            <button onClick={() => setError('')} className="float-right font-bold">
+              ×
+            </button>
+          </div>
+        )}
+        {success && (
+          <div className="p-3 bg-green-100 text-green-700 rounded">
+            {success}
+            <button onClick={() => setSuccess('')} className="float-right font-bold">
+              ×
+            </button>
+          </div>
+        )}
+
+        {loading && (
+          <div className="text-center py-4">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-600"></div>
+            <p className="mt-2 text-gray-600">Processing...</p>
+          </div>
+        )}
+
+        {!walletAddress ? (
+          <button
+            onClick={handleConnect}
+            disabled={loading}
+            className="w-full bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 disabled:bg-indigo-300"
+          >
+            Connect Wallet
+          </button>
+        ) : (
+          <>
+            <div className="space-y-2">
+              <p className="text-gray-700 text-sm break-words">Connected: {walletAddress}</p>
+              <button
+                onClick={handleDisconnect}
+                disabled={loading}
+                className="w-full bg-red-500 text-white py-2 rounded hover:bg-red-600 disabled:bg-red-300"
+              >
+                Disconnect
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <h2 className="text-lg font-semibold text-gray-800">Deposit STX</h2>
+              <input
+                type="number"
+                placeholder="Amount (STX)"
+                className="w-full p-2 border rounded"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                disabled={loading}
+                min="0.000001"
+                step="0.000001"
               />
-              
-              {vaultInfo === null && (
-                <VaultForm handleDeposit={handleDeposit} />
-              )}
-              
-              {txStatus && (
-                <div className={`mt-6 p-4 rounded-lg ${
-                  txStatus.type === 'loading' ? 'bg-blue-50 text-blue-700' :
-                  txStatus.type === 'success' ? 'bg-green-50 text-green-700' :
-                  'bg-red-50 text-red-700'
-                }`}>
-                  <p className="text-sm">{txStatus.message}</p>
-                  {txStatus.txId && (
-                    <a 
-                      href={`https://explorer.stacks.co/txid/${txStatus.txId}?chain=testnet`} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-sm underline"
-                    >
-                      View on Explorer
-                    </a>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </main>
-        
-        <footer className="py-6 text-center text-gray-500 text-sm">
-          <p>STX Time-Locked Vault &copy; {new Date().getFullYear()}</p>
-        </footer>
+              <input
+                type="number"
+                placeholder="Lock Blocks (1 block ≈ 10 minutes)"
+                className="w-full p-2 border rounded"
+                value={lockBlocks}
+                onChange={(e) => setLockBlocks(e.target.value)}
+                disabled={loading}
+                min="1"
+              />
+              <button
+                onClick={depositSTX}
+                disabled={loading || !amount || !lockBlocks}
+                className="w-full bg-green-500 text-white py-2 rounded hover:bg-green-600 disabled:bg-green-300"
+              >
+                Deposit
+              </button>
+            </div>
+
+            {vaultInfo ? (
+              <div className="space-y-2 p-4 bg-gray-50 rounded">
+                <h2 className="text-lg font-semibold text-gray-800">Vault Info</h2>
+                <p>Amount Locked: {formatSTX(vaultInfo.amount)} STX</p>
+                <p>Unlock Block Height: {vaultInfo['unlock-height']}</p>
+                <p>Blocks Remaining: {blocksUntilUnlock}</p>
+                <p className="text-sm text-gray-500">
+                  Approx. {(blocksUntilUnlock * 10 / 60).toFixed(1)} hours remaining
+                </p>
+              </div>
+            ) : (
+              <div className="p-4 bg-gray-50 rounded text-center">
+                <p className="text-gray-600">No active vault found for this address</p>
+              </div>
+            )}
+
+            <button
+              onClick={withdrawSTX}
+              disabled={loading || !vaultInfo}
+              className="w-full bg-blue-500 text-white py-2 rounded hover:bg-blue-600 disabled:bg-blue-300"
+            >
+              Withdraw
+            </button>
+          </>
+        )}
       </div>
-    </Connect>
+    </div>
   );
 }
-
-export default App;
