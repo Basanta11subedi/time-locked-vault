@@ -1,5 +1,5 @@
 /** @type {import('tailwindcss').Config} */
-module.exports = {
+export default {
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
@@ -7,13 +7,7 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        indigo: {
-          900: '#1e1b4b',
-          800: '#3730a3',
-        },
-        purple: {
-          800: '#6b21a8',
-        },
+        'stacks-purple': '#5546FF',
       },
     },
   },
