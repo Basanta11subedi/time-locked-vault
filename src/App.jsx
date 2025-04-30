@@ -1,20 +1,19 @@
 import { useState, useEffect } from 'react';
 import { connect, disconnect, isConnected, getLocalStorage, request } from '@stacks/connect';
-import { Cl } from '@stacks/transactions';
-import { StacksTestnet } from '@stacks/network';
+import { broadcastTransaction, Cl, fetchCallReadOnlyFunction, cvToValue } from '@stacks/transactions';
 
 export default function App() {
   const [walletAddress, setWalletAddress] = useState('');
-  const [amount, setAmount] = useState('');
-  const [lockBlocks, setLockBlocks] = useState('');
+  const [amount, setAmount] = useState();
+  const [lockBlocks, setLockBlocks] = useState();
   const [vaultInfo, setVaultInfo] = useState(null);
   const [blocksUntilUnlock, setBlocksUntilUnlock] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  const network = new StacksTestnet();
-  const CONTRACT_ADDRESS = 'ST2WD8TKH9C3VKX4C355RGPPWFGYRAA9WT29SFQZY.time-vault';
+
+  const CONTRACT_ADDRESS = 'ST2WD8TKH9C3VKX4C355RGPPWFGYRAA9WT29SFQZY.time-vault3';
   
 
   useEffect(() => {
@@ -22,11 +21,16 @@ export default function App() {
       try {
         if (isConnected()) {
           const data = getLocalStorage();
-          const stxAddress = data?.addresses?.stx?.[0]?.address || '';
+          const stxAddress = data?.addresses?.stx?.[0]?.address;
+          setWalletAddress(stxAddress);
+          console.log('hello',typeof stxAddress)
           console.log("address:", stxAddress);
           if (stxAddress) {
-            setWalletAddress(stxAddress);
+            try{
             await fetchVaultInfo(stxAddress);
+            }catch (err) {
+              console.error("fetchVault failed", err)
+            }
           }
         }
       } catch (err) {
@@ -35,7 +39,7 @@ export default function App() {
       }
     };
     checkConnection();
-  }, []);
+  }, [walletAddress]);
 
   const handleConnect = async () => {
     try {
@@ -44,6 +48,7 @@ export default function App() {
       await connect();
       const data = getLocalStorage();
       const stxAddress = data?.addresses?.stx?.[0]?.address || '';
+     
       setWalletAddress(stxAddress);
       await fetchVaultInfo(stxAddress);
       setSuccess('Wallet connected successfully');
@@ -79,25 +84,30 @@ export default function App() {
     try {
       setLoading(true);
       setError('');
-      const amountMicroSTX = Math.floor(Number(amount) * 1000000);
-      const blocks = Math.floor(Number(lockBlocks));
+      const amountMicroSTX = (amount * 1000000);
+      const blocks = (lockBlocks);
 
       console.log("Depositing:", {
         amountSTX: amount,
         amountMicroSTX,
-        lockBlocks: blocks
+        lockBlocks: typeof blocks
       });
+
+      const cvAmount = Cl.uint((amountMicroSTX)) // convert STX to micro-STX
+      const cvBlock = Cl.uint((blocks))
+
+      console.log("lala", {cvAmount, Block: cvBlock})
 
       console.log("amount:", amount * 1000000);
       const response = await request('stx_callContract', {
         contract: CONTRACT_ADDRESS,
         functionName: 'deposit',
         functionArgs: [
-          Cl.uint(amountMicroSTX), // convert STX to micro-STX
-          Cl.uint(blocks)
+          cvAmount,
+          cvBlock
         ],
-        
-        network,
+        network: 'testnet',
+        //postConditionMode: 'allow'
       });
       console.log("amount:", amount * 1000000);
       console.log('Deposit success:', response);
@@ -121,7 +131,7 @@ export default function App() {
         contract: CONTRACT_ADDRESS,
         functionName: 'withdraw',
         functionArgs: [],
-        network,
+        network: 'testnet'
       });
       console.log('Withdraw success:', response);
       setSuccess('Withdrawal transaction submitted');
@@ -141,33 +151,58 @@ export default function App() {
       setLoading(true);
       setError('');
       
-      // Get vault info
-      const infoResponse = await request('stx_callContract', {
-        contract: CONTRACT_ADDRESS,
+      // Get vault inf0
+
+      const VaultTxOptions = {
+        contractName: 'time-vault3',
+        contractAddress: 'ST2WD8TKH9C3VKX4C355RGPPWFGYRAA9WT29SFQZY',
         functionName: 'get-vault-info',
-        functionArgs: [Cl.principal(address)],
-        network,
-      });
+        functionArgs: [Cl.standardPrincipal(address)],
+        senderAddress: address,
+        network: 'testnet'
+      }
+
+      const vaultTransaction = await fetchCallReadOnlyFunction(VaultTxOptions);
+      
+      console.log(vaultTransaction);
+      const readable = cvToValue(vaultTransaction)
+      console.log(readable.value);
+      console.log(readable.value['unlock-height'].value);
+      
+
+
+      
       
       // Get blocks until unlock
-      const blocksResponse = await request('stx_callContract', {
-        contract: CONTRACT_ADDRESS,
+      const BlockTxOptions = {
+        contractName: 'time-vault3',
+        contractAddress: 'ST2WD8TKH9C3VKX4C355RGPPWFGYRAA9WT29SFQZY',
         functionName: 'blocks-until-unlock',
-        functionArgs: [Cl.principal(address)],
-        network,
-      });
+        functionArgs: [Cl.standardPrincipal(address)],
+        senderAddress: address,
+        network: 'testnet'
+      }
+
+      const blockTransaction = await fetchCallReadOnlyFunction(BlockTxOptions);
+      
+      console.log(blockTransaction);
+      
+      const blockreadable = cvToValue(blockTransaction);
+      console.log(blockreadable);
+
+
 
       // Check if vault exists (response will be null if no vault)
-      if (infoResponse.result === null) {
+      if (vaultTransaction === null) {
         setVaultInfo(null);
         setBlocksUntilUnlock(null);
       } else {
-        setVaultInfo(infoResponse.result);
-        setBlocksUntilUnlock(blocksResponse.result);
+        setVaultInfo(readable);
+        setBlocksUntilUnlock();
       }
     } catch (error) {
       console.error('Fetch Vault Info failed:', error);
-      setError('Failed to fetch vault info');
+      setError('No Vault');
     } finally {
       setLoading(false);
     }
@@ -261,12 +296,15 @@ export default function App() {
             {vaultInfo ? (
               <div className="space-y-2 p-4 bg-gray-50 rounded">
                 <h2 className="text-lg font-semibold text-gray-800">Vault Info</h2>
-                <p>Amount Locked: {formatSTX(vaultInfo.amount)} STX</p>
-                <p>Unlock Block Height: {vaultInfo['unlock-height']}</p>
-                <p>Blocks Remaining: {blocksUntilUnlock}</p>
+                <p>Amount Locked: {formatSTX(vaultInfo.value.amount.value)} STX</p>
+                <p>Unlock Block Height: {vaultInfo.value['unlock-height'].value}</p>
+                {blocksUntilUnlock == 0 ? 
+                <>
+                <p>Blocks Remaining: {blocksUntilUnlock} b</p>
                 <p className="text-sm text-gray-500">
                   Approx. {(blocksUntilUnlock * 10 / 60).toFixed(1)} hours remaining
                 </p>
+                </> : <><p>You can withdraw your stx</p></> }
               </div>
             ) : (
               <div className="p-4 bg-gray-50 rounded text-center">
